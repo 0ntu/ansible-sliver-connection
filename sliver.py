@@ -11,17 +11,11 @@ sys.path.append("/home/ontu/ansible/.venv/lib/python3.13/site-packages")
 
 import sliver
 
-import functools
-import getpass
-import os
-import pty
-import selectors
-import shutil
-import subprocess
-import time
 import asyncio
 import typing as t
 import re
+import gzip
+import io
 
 import ansible.constants as C
 from ansible.errors import AnsibleError, AnsibleFileNotFound, AnsibleConnectionFailure
@@ -34,139 +28,92 @@ from ansible.utils.path import unfrackpath
 display = Display()
 
 
+# created once for every host we provision
 class Connection(ConnectionBase):
 
     transport = 'sliver'
     has_pipelining = False
-    session = None
+
+    sessionID = None
     client = None
-    interact = None
-
-    async def makeConnection(self):
-        # CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".sliver-client", "configs")
-        # DEFAULT_CONFIG = os.path.join(CONFIG_DIR, "ansible_127.0.0.1.cfg")
-        # config = sliver.SliverClientConfig.parse_config_file(DEFAULT_CONFIG)
-        # self.client = sliver.SliverClient(config)
-        # # display.vvv('[*] Connected to server ...')
-        # await self.client.connect()
-        # sessions = await self.client.sessions()
-        # # display.vvv('[*] Sessions: %r' % sessions)
-        # if len(sessions):
-        #     # display.vvv('[*] Interacting with session', sessions[0].ID)
-        #     self.interact = await self.client.interact_session(sessions[0].ID)
-        #     ls = await self.interact.execute('whoami', [], True)
-        #     # display.vvv(ls.Stdout.decode())
-        #     self.session = sessions[0]
-        pass
-
 
     def __init__(self, *args: t.Any, **kwargs: t.Any) -> None:
         super(Connection, self).__init__(*args, **kwargs)
 
+        config = sliver.SliverClientConfig.parse_config_file(config_path)
+        self.client = sliver.SliverClient(config)
+
+    async def setSession(self):
+        await self.client.connect()
+        sessions = await self.client.sessions()
+        self.session = sessions[0]
+        self.sessionID = self.session.ID
+
+    # _connect() is called whenever a new task is run
+    # we only need the sessionID & clientID for the lifetime of the play
+    # these vars are constant throughout the lifetime, so no need to regenerate for every task
+    # i.e no connection management
     def _connect(self) -> Connection:
-        # # display.vvv("in connect()")
-        # asyncio.run(self.makeConnection())
+        config_path = self._play_context.config
+        display.vvv(f"!!!! CONFIG PATH !!!!")
+        display.vvv(f"!!!! CONFIG PATH !!!!")
+        display.vvv(f"!!!! CONFIG PATH !!!!")
+        display.vvv(f"!!!! CONFIG PATH !!!!")
+        display.vvv(f"!!!! CONFIG PATH !!!!")
+        display.vvv(f"{config_path}")
+
+        config = sliver.SliverClientConfig.parse_config_file(config_path)
+        self.client = sliver.SliverClient(config)
         return self
 
     async def asyncExecCommand(self, cmd: str) -> tuple[int, bytes, bytes]:
-        # display.vvv("in asyncexec")
-        CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".sliver-client", "configs")
-        DEFAULT_CONFIG = os.path.join(CONFIG_DIR, "ansible_127.0.0.1.cfg")
-        config = sliver.SliverClientConfig.parse_config_file(DEFAULT_CONFIG)
-        self.client = sliver.SliverClient(config)
-        # display.vvv('[*] Connected to server ...')
         await self.client.connect()
-        sessions = await self.client.sessions()
-        # display.vvv('[*] Sessions: %r' % sessions)
-        if len(sessions):
-            # display.vvv('[*] Interacting with session', sessions[0].ID)
-            self.interact = await self.client.interact_session(sessions[0].ID)
+        interact = await self.client.interact_session(self.session.ID)
+        
+        match = re.search(r"'(.*?)'", cmd)
+        inner = match.group(1)
 
-            contents = b"#!/bin/sh\n" + cmd.encode() + b"\n"
-            # contents = b"#!/bin/sh\nwall \"" + cmd.encode() + b"\"\n" + cmd.encode()
-            if b"rm -f -r" in contents:
-                return 0, "", ""
-
-            await self.interact.upload('/tmp/troll.sh', contents)
-            cmdRes = await self.interact.execute("/tmp/troll.sh", [], True)
-            # display.vvv(cmdRes.Stdout.decode())
-            self.session = sessions[0]
-        # display.vvv("ran exe")
-        # display.vvv(cmdRes.Stdout.decode())
+        cmdRes = await interact.execute("/bin/sh", ['-c', f'{inner}'], True)
         return cmdRes.Status, cmdRes.Stdout.decode(), cmdRes.Stderr.decode()
 
 
     def exec_command(self, cmd: str, in_data: bytes | None = None, sudoable: bool = True) -> tuple[int, bytes, bytes]:
         super(Connection, self).exec_command(cmd, in_data=in_data, sudoable=sudoable)
-        # display.vvv("in exec_command()")
-        display.vvv(f"cmd: {cmd}")
-
-        ret = asyncio.run(self.asyncExecCommand(cmd))
-        display.vvv(f"res: {ret}")
-
-        return ret
+        return asyncio.run(self.asyncExecCommand(cmd))
 
     async def asyncPutFile(self, in_path: str, out_path: str) -> None:
-        # display.vvv("in asyncexec")
-        display.vvv(f"uploading to {out_path}")
-        display.vvv(f"uploading to {out_path}")
-        display.vvv(f"uploading to {out_path}")
-        display.vvv(f"uploading to {out_path}")
-        CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".sliver-client", "configs")
-        DEFAULT_CONFIG = os.path.join(CONFIG_DIR, "ansible_127.0.0.1.cfg")
-        config = sliver.SliverClientConfig.parse_config_file(DEFAULT_CONFIG)
-        self.client = sliver.SliverClient(config)
-        # display.vvv('[*] Connected to server ...')
+        with open(in_path, 'rb') as f:
+            contents = f.read()
+
         await self.client.connect()
-        sessions = await self.client.sessions()
-        # display.vvv('[*] Sessions: %r' % sessions)
-        if len(sessions):
-            # display.vvv('[*] Interacting with session', sessions[0].ID)
-            self.interact = await self.client.interact_session(sessions[0].ID)
+        interact = await self.client.interact_session(self.session.ID)
 
-            with open(in_path, 'rb') as f:
-                contents = f.read()
-            # contents = contents.encode()
-            # contents = b"#!/bin/sh\n" + b"wall HAHA" + b"\n"
-            # contents = b"#!/bin/sh\nwall \"" + cmd.encode() + b"\"\n" + cmd.encode()
-            # if b"rm -f -r" in contents:
-            #     return 0, "", ""
-
-            display.vvv(f"uploading to {out_path}")
-            await self.interact.upload(out_path, contents)
-            # cmdRes = await self.interact.execute("/tmp/troll.sh", [], True)
-            # display.vvv(cmdRes.Stdout.decode())
-            self.session = sessions[0]
-        # display.vvv("ran exe")
-        # display.vvv(cmdRes.Stdout.decode())
-        return
-        # return cmdRes.Status, cmdRes.Stdout.decode(), cmdRes.Stderr.decode()
+        await interact.upload(out_path, contents)
 
     def put_file(self, in_path: str, out_path: str) -> None:
         return asyncio.run(self.asyncPutFile(in_path, out_path))
 
     async def asyncFetchFile(self, in_path: str, out_path: str) -> None:
-        # CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".sliver-client", "configs")
-        # DEFAULT_CONFIG = os.path.join(CONFIG_DIR, "ansible_127.0.0.1.cfg")
-        # config = sliver.SliverClientConfig.parse_config_file(DEFAULT_CONFIG)
-        # self.client = sliver.SliverClient(config)
-        # # display.vvv('[*] Connected to server ...')
-        # await self.client.connect()
-        # sessions = await self.client.sessions()
-        # # display.vvv('[*] Sessions: %r' % sessions)
-        # contents = await self.interact.download(in_path)
+        await self.client.connect()
+        interact = await self.client.interact_session(self.session.ID)
 
-        # with open(in_path, 'wb') as file:
-        #     file.write(contents)\"
-        pass
+        contents = await interact.download(in_path)
+        with gzip.GzipFile(fileobj=io.BytesIO(contents.Data)) as f:
+            decompressed_data = f.read()
+            display.vvv(decompressed_data.decode())
+
+        with open(out_path, 'wb') as f:
+            f.write(decompressed_data)
 
 
     def fetch_file(self, in_path: str, out_path: str) -> None:
-        pass
-        # return asyncio.run(self.asyncFetchFile(in_path, out_path))
+        return asyncio.run(self.asyncFetchFile(in_path, out_path))
 
+    # see _connect()
     def reset(self) -> None:
         pass
 
+    # see _connect()
+    # we hold no resources
     def close(self) -> None:
         pass
