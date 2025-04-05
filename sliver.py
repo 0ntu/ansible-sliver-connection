@@ -14,17 +14,26 @@ import typing as t
 import re
 import gzip
 import io
+import time
 
-import ansible.constants as C
-from ansible.errors import AnsibleError, AnsibleFileNotFound, AnsibleConnectionFailure
-from ansible.module_utils.six import text_type, binary_type
-from ansible.module_utils.common.text.converters import to_bytes, to_native, to_text
 from ansible.plugins.connection import ConnectionBase
 from ansible.utils.display import Display
-from ansible.utils.path import unfrackpath
+
+
+DOCUMENTATION = """
+    name: sliver
+    author: UFSIT BlueTeam
+
+    short_description: connect via a sliver c2 connection
+
+    options:
+      password:
+        description: The STS access key to use when connecting via session-manager.
+        env:
+        - name: ansible_ssh_pass
+"""
 
 display = Display()
-
 
 # created once for every host we provision
 class Connection(ConnectionBase):
@@ -37,10 +46,14 @@ class Connection(ConnectionBase):
 
     def __init__(self, *args: t.Any, **kwargs: t.Any) -> None:
         super(Connection, self).__init__(*args, **kwargs)
+
         remote = self._play_context.remote_addr
         display.v(f"Remote Address: {remote}")
 
-        config = sliver.SliverClientConfig.parse_config_file("/home/ontu/ansible/sliver-client.cfg")
+        configPath = self.get_option('password') or self._play_context.password
+        display.v(f"Path: {configPath}")
+
+        config = sliver.SliverClientConfig.parse_config_file(configPath)
         self.client = sliver.SliverClient(config)
         self.sessionID = asyncio.run(self.getSessionID(remote))
 
@@ -54,27 +67,31 @@ class Connection(ConnectionBase):
                 display.v(f"Found Sliver Session!")
                 return session.ID
 
-        raise AnsibleError("Could not find session on sliver server!")
+        #  No session exists, maybe beacon does?
+        # self.createSessionFromBeacon(self, remote_addr)
+
+
 
     # _connect() is called whenever a new task is run
     # we only need the sessionID & clientID for the lifetime of the play
     # these vars are constant throughout the lifetime, so no need to regenerate for every task
     # i.e no connection management
     def _connect(self) -> Connection:
+        display.v(f"_connect()")
         return self
 
     async def asyncExecCommand(self, cmd: str) -> tuple[int, bytes, bytes]:
         await self.client.connect()
         interact = await self.client.interact_session(self.sessionID)
-        
-        match = re.search(r"'(.*?)'", cmd)
-        inner = match.group(1)
 
-        cmdRes = await interact.execute("/bin/sh", ['-c', f'{inner}'], True)
+        # 1.5 hours to find this command right here
+        cmdRes = await interact.execute("/bin/sh", ['-c', cmd], True)
+
         return cmdRes.Status, cmdRes.Stdout.decode(), cmdRes.Stderr.decode()
 
 
     def exec_command(self, cmd: str, in_data: bytes | None = None, sudoable: bool = True) -> tuple[int, bytes, bytes]:
+        display.v("exec_command()")
         super(Connection, self).exec_command(cmd, in_data=in_data, sudoable=sudoable)
         return asyncio.run(self.asyncExecCommand(cmd))
 
