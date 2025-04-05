@@ -1,5 +1,3 @@
-# (c) 2012, Michael DeHaan <michael.dehaan@gmail.com>
-# (c) 2015, 2017 Toshio Kuratomi <tkuratomi@ansible.com>
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import annotations
@@ -39,36 +37,35 @@ class Connection(ConnectionBase):
 
     def __init__(self, *args: t.Any, **kwargs: t.Any) -> None:
         super(Connection, self).__init__(*args, **kwargs)
+        remote = self._play_context.remote_addr
+        display.v(f"Remote Address: {remote}")
 
-        config = sliver.SliverClientConfig.parse_config_file(config_path)
+        config = sliver.SliverClientConfig.parse_config_file("/home/ontu/ansible/sliver-client.cfg")
         self.client = sliver.SliverClient(config)
+        self.sessionID = asyncio.run(self.getSessionID(remote))
 
-    async def setSession(self):
+
+    async def getSessionID(self, remote_addr):
         await self.client.connect()
         sessions = await self.client.sessions()
-        self.session = sessions[0]
-        self.sessionID = self.session.ID
+
+        for session in sessions:
+            if (remote_addr == session.RemoteAddress.split(':')[0]):
+                display.v(f"Found Sliver Session!")
+                return session.ID
+
+        raise AnsibleError("Could not find session on sliver server!")
 
     # _connect() is called whenever a new task is run
     # we only need the sessionID & clientID for the lifetime of the play
     # these vars are constant throughout the lifetime, so no need to regenerate for every task
     # i.e no connection management
     def _connect(self) -> Connection:
-        config_path = self._play_context.config
-        display.vvv(f"!!!! CONFIG PATH !!!!")
-        display.vvv(f"!!!! CONFIG PATH !!!!")
-        display.vvv(f"!!!! CONFIG PATH !!!!")
-        display.vvv(f"!!!! CONFIG PATH !!!!")
-        display.vvv(f"!!!! CONFIG PATH !!!!")
-        display.vvv(f"{config_path}")
-
-        config = sliver.SliverClientConfig.parse_config_file(config_path)
-        self.client = sliver.SliverClient(config)
         return self
 
     async def asyncExecCommand(self, cmd: str) -> tuple[int, bytes, bytes]:
         await self.client.connect()
-        interact = await self.client.interact_session(self.session.ID)
+        interact = await self.client.interact_session(self.sessionID)
         
         match = re.search(r"'(.*?)'", cmd)
         inner = match.group(1)
@@ -86,7 +83,7 @@ class Connection(ConnectionBase):
             contents = f.read()
 
         await self.client.connect()
-        interact = await self.client.interact_session(self.session.ID)
+        interact = await self.client.interact_session(self.sessionID)
 
         await interact.upload(out_path, contents)
 
@@ -95,7 +92,7 @@ class Connection(ConnectionBase):
 
     async def asyncFetchFile(self, in_path: str, out_path: str) -> None:
         await self.client.connect()
-        interact = await self.client.interact_session(self.session.ID)
+        interact = await self.client.interact_session(self.sessionID)
 
         contents = await interact.download(in_path)
         with gzip.GzipFile(fileobj=io.BytesIO(contents.Data)) as f:
