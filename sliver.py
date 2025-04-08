@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-# this is temporary lol, idrk how to import external libraries w/ ansible plugins
-# should be fixed with collections i think?
-import sys
-sys.path.append("/home/ontu/ansible/.venv/lib/python3.13/site-packages")
-
-import sliver
-
 import asyncio
 import typing as t
-import re
 import gzip
 import io
-import time
-
 from ansible.plugins.connection import ConnectionBase
 from ansible.utils.display import Display
+
+try:
+    import sliver
+except ImportError:
+    raise AnsibleError("sliver-py is required for this plugin! pip install sliver-py")
 
 
 DOCUMENTATION = """
