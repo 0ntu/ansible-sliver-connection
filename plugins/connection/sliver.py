@@ -8,6 +8,7 @@ import gzip
 import io
 from ansible.plugins.connection import ConnectionBase
 from ansible.utils.display import Display
+from ansible.errors import AnsibleError
 
 try:
     import sliver
@@ -54,7 +55,10 @@ class Connection(ConnectionBase):
 
 
     async def getSessionID(self, remote_addr):
-        await self.client.connect()
+        try:
+            await self.client.connect()
+        except:
+            raise AnsibleError("Could not connect to Sliver Multiplayer Server")
         sessions = await self.client.sessions()
 
         for session in sessions:
@@ -62,12 +66,19 @@ class Connection(ConnectionBase):
                 display.v(f"Found Sliver Session!")
                 return session.ID
 
+
         #  No session exists, maybe beacon does?
-        # self.createSessionFromBeacon(self, remote_addr)
+        beacons = await self.client.beacons()
+
+        for beacon in beacons:
+            if (remote_addr == beacon.RemoteAddress.split(':')[0]):
+                raise AnsibleError(f"Found a Sliver Beacon for {remote_addr}, create a session with interactive")
+
+        raise AnsibleError(f"Could not find Sliver Session/Beacon: {remote_addr}")
 
 
 
-    # _connect() is called whenever a new task is run
+    # _connect() is called multiple times whenever a new task is run
     # we only need the sessionID & clientID for the lifetime of the play
     # these vars are constant throughout the lifetime, so no need to regenerate for every task
     # i.e no connection management
@@ -76,7 +87,10 @@ class Connection(ConnectionBase):
         return self
 
     async def asyncExecCommand(self, cmd: str) -> tuple[int, bytes, bytes]:
-        await self.client.connect()
+        try:
+            await self.client.connect()
+        except:
+            raise AnsibleError("Could not connect to Sliver Multiplayer Server")
         interact = await self.client.interact_session(self.sessionID)
 
         # 1.5 hours to find this command right here
@@ -94,7 +108,10 @@ class Connection(ConnectionBase):
         with open(in_path, 'rb') as f:
             contents = f.read()
 
-        await self.client.connect()
+        try:
+            await self.client.connect()
+        except:
+            raise AnsibleError("Could not connect to Sliver Multiplayer Server")
         interact = await self.client.interact_session(self.sessionID)
 
         await interact.upload(out_path, contents)
@@ -103,7 +120,10 @@ class Connection(ConnectionBase):
         return asyncio.run(self.asyncPutFile(in_path, out_path))
 
     async def asyncFetchFile(self, in_path: str, out_path: str) -> None:
-        await self.client.connect()
+        try:
+            await self.client.connect()
+        except:
+            raise AnsibleError("Could not connect to Sliver Multiplayer Server")
         interact = await self.client.interact_session(self.sessionID)
 
         contents = await interact.download(in_path)
